@@ -3,6 +3,7 @@ from binaryninja import log
 from binaryninja.plugin import PluginCommand, BackgroundTaskThread
 from binaryninja.binaryview import BinaryReader
 from binaryninja.types import Symbol, Type, NamedTypeReferenceBuilder
+from binaryninja.interaction import get_text_line_input
 # Structure has been deprecated in favor of the StructureBuilder API.
 try:
     from binaryninja.types import StructureBuilder
@@ -16,7 +17,7 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "itanium_demangler"))
 from itanium_demangler import Node, parse as parse_mangled, is_ctor_or_dtor
 
 
-def analyze_cxx_abi(view, start=None, length=None, task=None):
+def analyze_cxx_abi(view, start=None, length=None, task=None, regex=None):
     platform = view.platform
     arch = platform.arch
 
@@ -187,6 +188,8 @@ def analyze_cxx_abi(view, start=None, length=None, task=None):
             assert False
 
     symbols = view.get_symbols(start, length)
+    if regex is not None:
+        symbols = [symbol for symbol in symbols if regex.match(symbol.full_name.encode())]
     if task:
         task.set_total(len(symbols))
 
@@ -356,10 +359,11 @@ def analyze_cxx_abi(view, start=None, length=None, task=None):
 class CxxAbiAnalysis(BackgroundTaskThread):
     _PROGRESS_TEXT = 'Analyzing Itanium C++ ABI'
 
-    def __init__(self, view):
+    def __init__(self, view, regex):
         BackgroundTaskThread.__init__(self,
             initial_progress_text=self._PROGRESS_TEXT + "...", can_cancel=True)
         self._view = view
+        self._regex = regex
         self._total = 0
         self._current = 0
 
@@ -373,13 +377,33 @@ class CxxAbiAnalysis(BackgroundTaskThread):
 
     def run(self):
         try:
-            analyze_cxx_abi(self._view, task=self)
+            analyze_cxx_abi(self._view, task=self, regex=self._regex)
         finally:
             self.finish()
+
+
+def command_entry(view, filtered):
+    regex = None
+    if filtered:
+        in_filter = get_text_line_input('Filter Regular Expression:', 'Analyze Itanium C++ ABI...')
+        try:
+            regex = re.compile(in_filter)
+        except:
+            pass
+        if regex is None:
+            return
+    
+    CxxAbiAnalysis(view, regex).start()
 
 
 PluginCommand.register(
     'Analyze Itanium C++ ABI...',
     'Infer data types from C++ symbol names conforming to Itanium ABI.',
-    lambda view: CxxAbiAnalysis(view).start()
+    lambda view: command_entry(view, filtered=False)
+)
+
+PluginCommand.register(
+    'Analyze Itanium C++ ABI... (Filtered)',
+    'Infer data types from C++ symbol names conforming to Itanium ABI.',
+    lambda view: command_entry(view, filtered=True)
 )
